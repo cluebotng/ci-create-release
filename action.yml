@@ -59,7 +59,7 @@ runs:
       with:
         github-token: ${{ steps.token.outputs.access_token }}
         script: |
-          const tag_name = '${{ inputs.tag_name }}';
+          const tag_name = '${{ inputs.tag_name }}'.replace(/^refs\/tags\//, '');
 
           try {
             const release = await github.rest.repos.getReleaseByTag({
