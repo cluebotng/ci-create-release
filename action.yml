@@ -1,0 +1,88 @@
+name: Create a GitHub release
+description: Create a GitHub release
+
+inputs:
+  repo_name:
+    required: true
+    type: string
+  tag_name:
+    required: true
+    type: string
+  gh_app_key:
+    required: true
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - id: bearer
+      name: Generate Github API Bearer Token
+      shell: bash
+      run: |
+        unix_now=$(date +%s)
+        key=$(echo -n "${{ inputs.gh_app_key }}" | base64 -d)
+
+        header='{"alg": "RS256", "typ": "JWT"}'
+        payload='{"iss": 2273324, "iat": '$((${unix_now}-60))', "exp": '$((${unix_now}+600))'}'
+
+        header_base64=$(echo -n "${header}" | openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n')
+        payload_base64=$(echo -n "${payload}" | openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n')
+
+        content="${header_base64}.${payload_base64}"
+        signature=$(openssl dgst -sha256 -sign <(echo -n "${key}") <(echo -n "${content}") | openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n')
+
+        echo "token=${content}.${signature}" >> $GITHUB_OUTPUT
+
+    - id: install
+      name: Get installation ID
+      shell: bash
+      run: |
+          installation=$(curl -s \
+                          --fail \
+                          -H "Authorization: Bearer ${{ steps.bearer.outputs.token }}" \
+                          https://api.github.com/repos/${{ inputs.repo_name }}/installation)
+          echo "installation_id=$(echo "${installation}" | jq -r .id)" >> $GITHUB_OUTPUT
+
+    - id: token
+      name: Generate Github API Access token
+      shell: bash
+      run: |
+        access_token=$(curl -s \
+                        --fail \
+                        -X POST \
+                        -H 'Authorization: Bearer ${{ steps.bearer.outputs.token }}' \
+                        https://api.github.com/app/installations/${{ steps.install.outputs.installation_id }}/access_tokens)
+        echo "access_token=$(echo "${access_token}" | jq -r .token)" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub release
+      uses: actions/github-script@v8
+      with:
+        github-token: ${{ steps.token.outputs.access_token }}
+        script: |
+          const tag_name = '${{ inputs.tag_name }}';
+
+          try {
+            const release = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: tag_name
+            });
+
+            console.log(`Release already exists for tag: ${release.data.name}`);
+            return
+          } catch (error) {
+            if (error.status !== 404) {
+              throw error;
+            }
+          }
+
+          const release = await github.rest.repos.createRelease({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: `Release ${tag_name}`,
+            tag_name: tag_name,
+            draft: false,
+            prerelease: false,
+            generate_release_notes: true,
+          });
+          console.log(`Created release for tag: ${release.data.name}`);
